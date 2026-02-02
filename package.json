@@ -1,6 +1,7 @@
 {
   "name": "openclaw-mem",
   "version": "0.1.0",
+  "type": "module",
   "description": "Persistent memory system for OpenClaw - automatic context capture, semantic search, and progressive disclosure",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -9,7 +10,7 @@
   },
   "scripts": {
     "dev": "tsx watch src/worker/server.ts",
-    "build": "tsc && npm run build:ui",
+    "build": "tsc && cp src/database/schema.sql dist/database/ && npm run build:ui",
     "build:ui": "cd ui && npm run build",
     "start": "node dist/worker/server.js",
     "test": "vitest",
@@ -43,6 +44,7 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
+    "@sinclair/typebox": "^0.32.0",
     "better-sqlite3": "^11.0.0",
     "chromadb": "^1.8.0",
     "fastify": "^4.26.0",

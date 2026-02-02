@@ -13,6 +13,18 @@ interface HookResponse<T = unknown> {
   error?: string;
 }
 
+interface Observation {
+  id: number;
+  session_id: number;
+  type: string;
+  tool_name: string | null;
+  input: string | null;
+  output: string | null;
+  summary: string | null;
+  created_at: string;
+  importance: number;
+}
+
 /**
  * Check if the worker service is running
  */
@@ -287,7 +299,7 @@ export async function getObservations(ids: number[]): Promise<HookResponse<{
       throw new Error(`HTTP ${response.status}`);
     }
 
-    const observations = await response.json();
+    const observations = await response.json() as Observation[];
 
     return { success: true, data: { observations } };
   } catch (error) {

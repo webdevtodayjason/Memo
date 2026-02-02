@@ -109,6 +109,38 @@ export async function createServer(config: WorkerConfig = {}): Promise<FastifyIn
     return observation;
   });
 
+  // Delete observation
+  app.delete<{
+    Params: { id: string }
+  }>('/api/observations/:id', async (request, reply) => {
+    const id = parseInt(request.params.id, 10);
+    const observation = db.getObservation(id);
+    if (!observation) {
+      return reply.code(404).send({ error: 'Observation not found' });
+    }
+    db.deleteObservation(id);
+    return { success: true, deleted: id };
+  });
+
+  // Update observation (partial)
+  app.patch<{
+    Params: { id: string };
+    Body: {
+      type?: string;
+      summary?: string;
+      output?: string;
+      importance?: number;
+    }
+  }>('/api/observations/:id', async (request, reply) => {
+    const id = parseInt(request.params.id, 10);
+    const observation = db.getObservation(id);
+    if (!observation) {
+      return reply.code(404).send({ error: 'Observation not found' });
+    }
+    const updated = db.updateObservation(id, request.body);
+    return updated;
+  });
+
   app.post<{
     Body: { ids: number[] }
   }>('/api/observations/batch', async (request) => {

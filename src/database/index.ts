@@ -201,6 +201,53 @@ export class MemoryDatabase {
     };
   }
 
+  deleteObservation(id: number): boolean {
+    const stmt = this.db.prepare('DELETE FROM observations WHERE id = ?');
+    const result = stmt.run(id);
+    return result.changes > 0;
+  }
+
+  updateObservation(id: number, updates: {
+    type?: string;
+    summary?: string;
+    output?: string;
+    importance?: number;
+  }): Observation | null {
+    const fields: string[] = [];
+    const values: (string | number)[] = [];
+    
+    if (updates.type !== undefined) {
+      fields.push('type = ?');
+      values.push(updates.type);
+    }
+    if (updates.summary !== undefined) {
+      fields.push('summary = ?');
+      values.push(updates.summary);
+    }
+    if (updates.output !== undefined) {
+      fields.push('output = ?');
+      values.push(updates.output);
+    }
+    if (updates.importance !== undefined) {
+      fields.push('importance = ?');
+      values.push(updates.importance);
+    }
+    
+    if (fields.length === 0) {
+      return this.getObservation(id);
+    }
+    
+    values.push(id);
+    const stmt = this.db.prepare(`
+      UPDATE observations 
+      SET ${fields.join(', ')}
+      WHERE id = ?
+      RETURNING *
+    `);
+    const row = stmt.get(...values) as Observation | undefined;
+    return row ? this.parseObservation(row) : null;
+  }
+
   // ============ Search ============
 
   search(query: string, options: {

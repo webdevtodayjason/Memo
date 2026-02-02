@@ -1,245 +1,180 @@
 /**
- * OpenClaw-Mem Extension
- * 
- * Persistent memory system with automatic capture and recall.
- * Uses SQLite + FTS5 for storage and search.
+ * OpenClaw-Mem Plugin
+ *
+ * Persistent memory with SQLite + FTS5 for AI conversations.
+ * Uses external worker service for storage.
+ * Provides auto-recall and auto-capture via lifecycle hooks.
  */
 
 import { Type } from "@sinclair/typebox";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk";
 
 // ============================================================================
-// Config Schema
+// Configuration Schema
 // ============================================================================
 
-const configSchema = Type.Object({
-  workerUrl: Type.Optional(Type.String({ default: "http://127.0.0.1:37778" })),
-  autoCapture: Type.Optional(Type.Boolean({ default: true })),
-  autoRecall: Type.Optional(Type.Boolean({ default: true })),
-  maxContextTokens: Type.Optional(Type.Number({ default: 4000 })),
-  captureTypes: Type.Optional(Type.Array(Type.String(), { 
-    default: ["bugfix", "decision", "architecture", "code_change"] 
-  })),
-});
+const configSchema = {
+  type: "object" as const,
+  additionalProperties: false,
+  properties: {
+    workerUrl: {
+      type: "string" as const,
+      default: "http://127.0.0.1:37778",
+      description: "OpenClaw-Mem worker service URL"
+    },
+    autoCapture: {
+      type: "boolean" as const,
+      default: true,
+      description: "Automatically capture observations after agent runs"
+    },
+    autoRecall: {
+      type: "boolean" as const,
+      default: true,
+      description: "Automatically inject relevant context before agent starts"
+    },
+    maxContextTokens: {
+      type: "number" as const,
+      default: 4000,
+      description: "Maximum tokens for context injection"
+    },
+    captureTypes: {
+      type: "array" as const,
+      items: { type: "string" as const },
+      default: ["bugfix", "decision", "architecture", "code_change"],
+      description: "Observation types to include in context"
+    }
+  }
+};
 
-type PluginConfig = {
+// ============================================================================
+// Types
+// ============================================================================
+
+interface PluginConfig {
   workerUrl: string;
   autoCapture: boolean;
   autoRecall: boolean;
   maxContextTokens: number;
   captureTypes: string[];
-};
+}
+
+interface Observation {
+  id: number;
+  session_id: number;
+  type: string;
+  tool_name: string | null;
+  input: string | null;
+  output: string | null;
+  summary: string | null;
+  created_at: string;
+  importance: number;
+}
 
 // ============================================================================
 // Worker Client
 // ============================================================================
 
 class MemoryWorkerClient {
-  constructor(private baseUrl: string) {}
+  constructor(private workerUrl: string) {}
 
   async health(): Promise<boolean> {
     try {
-      const res = await fetch(`${this.baseUrl}/api/health`, {
-        signal: AbortSignal.timeout(2000),
+      const response = await fetch(`${this.workerUrl}/api/health`, {
+        signal: AbortSignal.timeout(2000)
       });
-      return res.ok;
+      return response.ok;
     } catch {
       return false;
     }
   }
 
-  async createSession(sessionKey: string, projectPath?: string): Promise<{ id: number } | null> {
-    try {
-      const res = await fetch(`${this.baseUrl}/api/hooks/session-start`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_key: sessionKey, project_path: projectPath }),
-      });
-      if (!res.ok) return null;
-      const data = await res.json();
-      return { id: data.session?.id };
-    } catch {
-      return null;
-    }
+  async search(query: string, limit = 10): Promise<Observation[]> {
+    const response = await fetch(`${this.workerUrl}/api/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, limit }),
+      signal: AbortSignal.timeout(5000)
+    });
+    if (!response.ok) throw new Error(`Search failed: ${response.status}`);
+    const data = await response.json() as { results: Observation[] };
+    return data.results;
   }
 
-  async storeObservation(params: {
-    sessionKey: string;
+  async store(observation: {
+    session_key: string;
     type: string;
-    toolName?: string;
+    tool_name?: string;
     input?: string;
     output?: string;
     summary?: string;
     importance?: number;
-  }): Promise<{ id: number } | null> {
-    try {
-      const res = await fetch(`${this.baseUrl}/api/observations`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          session_key: params.sessionKey,
-          type: params.type,
-          tool_name: params.toolName,
-          input: params.input,
-          output: params.output,
-          summary: params.summary,
-          importance: params.importance,
-        }),
-      });
-      if (!res.ok) return null;
-      const data = await res.json();
-      return { id: data.id };
-    } catch {
-      return null;
-    }
+  }): Promise<Observation> {
+    // First ensure session exists
+    await fetch(`${this.workerUrl}/api/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ session_key: observation.session_key }),
+      signal: AbortSignal.timeout(5000)
+    });
+
+    // Then store observation
+    const response = await fetch(`${this.workerUrl}/api/observations`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(observation),
+      signal: AbortSignal.timeout(5000)
+    });
+    if (!response.ok) throw new Error(`Store failed: ${response.status}`);
+    return response.json();
   }
 
-  async search(query: string, options?: { type?: string; limit?: number }): Promise<Array<{
-    id: number;
-    type: string;
-    tool_name: string | null;
-    summary: string | null;
-    created_at: string;
-    importance: number;
-  }>> {
-    try {
-      const res = await fetch(`${this.baseUrl}/api/search`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query, ...options }),
-      });
-      if (!res.ok) return [];
-      const data = await res.json();
-      return data.results || [];
-    } catch {
-      return [];
-    }
+  async stats(): Promise<{ totalSessions: number; totalObservations: number }> {
+    const response = await fetch(`${this.workerUrl}/api/stats`, {
+      signal: AbortSignal.timeout(5000)
+    });
+    if (!response.ok) throw new Error(`Stats failed: ${response.status}`);
+    return response.json();
   }
 
-  async getObservation(id: number): Promise<{
-    id: number;
-    type: string;
-    tool_name: string | null;
-    input: string | null;
-    output: string | null;
-    summary: string | null;
-    created_at: string;
-    importance: number;
-  } | null> {
-    try {
-      const res = await fetch(`${this.baseUrl}/api/observations/${id}`);
-      if (!res.ok) return null;
-      return await res.json();
-    } catch {
-      return null;
-    }
-  }
-
-  async getObservations(ids: number[]): Promise<Array<{
-    id: number;
-    type: string;
-    tool_name: string | null;
-    input: string | null;
-    output: string | null;
-    summary: string | null;
-    created_at: string;
-  }>> {
-    try {
-      const res = await fetch(`${this.baseUrl}/api/observations/batch`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids }),
-      });
-      if (!res.ok) return [];
-      return await res.json();
-    } catch {
-      return [];
-    }
-  }
-
-  async getContext(options?: { maxTokens?: number; projectPath?: string }): Promise<{
-    contextText: string;
-    totalTokens: number;
-    observations: Array<{ id: number; summary: string }>;
-  } | null> {
-    try {
-      const params = new URLSearchParams();
-      if (options?.maxTokens) params.set("max_tokens", String(options.maxTokens));
-      if (options?.projectPath) params.set("project_path", options.projectPath);
-      
-      const res = await fetch(`${this.baseUrl}/api/context?${params}`);
-      if (!res.ok) return null;
-      return await res.json();
-    } catch {
-      return null;
-    }
-  }
-
-  async endSession(sessionKey: string, summary?: string): Promise<boolean> {
-    try {
-      const res = await fetch(`${this.baseUrl}/api/hooks/session-end`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_key: sessionKey, summary }),
-      });
-      return res.ok;
-    } catch {
-      return false;
-    }
+  async getObservation(id: number): Promise<Observation | null> {
+    const response = await fetch(`${this.workerUrl}/api/observations/${id}`, {
+      signal: AbortSignal.timeout(5000)
+    });
+    if (response.status === 404) return null;
+    if (!response.ok) throw new Error(`Get failed: ${response.status}`);
+    return response.json();
   }
 }
 
 // ============================================================================
-// Observation Classification
+// Capture Logic
 // ============================================================================
 
-function classifyToolResult(toolName: string, input: string, output: string): {
-  type: string;
-  importance: number;
-} {
-  const lowerTool = toolName.toLowerCase();
-  const lowerInput = (input || "").toLowerCase();
-  const lowerOutput = (output || "").toLowerCase();
+const CAPTURE_TRIGGERS = [
+  /remember|zapamatuj/i,
+  /prefer|radši|like|love|hate|want|need/i,
+  /decided|rozhodli|will use|budeme/i,
+  /important|always|never/i,
+  /bug|fix|error|issue/i,
+  /architecture|design|pattern/i,
+  /TODO|FIXME|NOTE/i,
+];
 
-  // Bugfixes
-  if (lowerInput.includes("fix") || lowerOutput.includes("fixed") || 
-      lowerOutput.includes("resolved") || lowerOutput.includes("error")) {
-    return { type: "bugfix", importance: 0.9 };
-  }
-
-  // Code changes
-  if (lowerTool.includes("write") || lowerTool.includes("edit")) {
-    return { type: "code_change", importance: 0.7 };
-  }
-
-  // Git operations
-  if (lowerTool.includes("exec") && lowerInput.includes("git")) {
-    return { type: "git_operation", importance: 0.6 };
-  }
-
-  // Testing
-  if (lowerInput.includes("test") || lowerOutput.includes("passed") || 
-      lowerOutput.includes("failed")) {
-    return { type: "testing", importance: 0.6 };
-  }
-
-  // Research/exploration
-  if (lowerTool.includes("search") || lowerTool.includes("web_")) {
-    return { type: "research", importance: 0.4 };
-  }
-
-  if (lowerTool.includes("read")) {
-    return { type: "exploration", importance: 0.3 };
-  }
-
-  // Default
-  return { type: "tool_use", importance: 0.5 };
+function shouldCapture(text: string): boolean {
+  if (!text || text.length < 20 || text.length > 2000) return false;
+  if (text.includes("<relevant-memories>")) return false;
+  if (text.startsWith("<") && text.includes("</")) return false;
+  return CAPTURE_TRIGGERS.some(r => r.test(text));
 }
 
-function truncate(text: string | undefined | null, maxLen: number): string {
-  if (!text) return "";
-  if (text.length <= maxLen) return text;
-  return text.substring(0, maxLen) + "...";
+function detectType(text: string): string {
+  const lower = text.toLowerCase();
+  if (/bug|fix|error|issue|crash/.test(lower)) return "bugfix";
+  if (/decided|decision|will use|chose/.test(lower)) return "decision";
+  if (/architecture|design|pattern|structure/.test(lower)) return "architecture";
+  if (/prefer|like|want|need/.test(lower)) return "preference";
+  if (/function|class|method|api/.test(lower)) return "code_change";
+  return "observation";
 }
 
 // ============================================================================
@@ -249,18 +184,19 @@ function truncate(text: string | undefined | null, maxLen: number): string {
 const openclawMemPlugin = {
   id: "openclaw-mem",
   name: "OpenClaw-Mem",
-  description: "Persistent memory system with automatic capture and semantic search",
+  description: "SQLite-backed persistent memory with auto-recall/capture",
   kind: "memory" as const,
   configSchema,
 
   register(api: OpenClawPluginApi) {
     const cfg = api.pluginConfig as PluginConfig;
-    const workerUrl = cfg.workerUrl || "http://127.0.0.1:37778";
+    const workerUrl = cfg?.workerUrl || "http://127.0.0.1:37778";
+    const autoCapture = cfg?.autoCapture ?? true;
+    const autoRecall = cfg?.autoRecall ?? true;
+    
     const client = new MemoryWorkerClient(workerUrl);
 
-    // Track current session
-    let currentSessionKey: string | null = null;
-    let workerAvailable = false;
+    api.logger.info(`openclaw-mem: plugin registered (worker: ${workerUrl})`);
 
     // ========================================================================
     // Tools
@@ -270,35 +206,38 @@ const openclawMemPlugin = {
       {
         name: "memory_search",
         label: "Memory Search",
-        description: "Search through past observations and work history. Use to find context about previous work, decisions, or bugs fixed.",
+        description: "Search through persistent memories. Use when you need context about past work, decisions, or observations.",
         parameters: Type.Object({
-          query: Type.String({ description: "Search query (natural language)" }),
-          type: Type.Optional(Type.String({ description: "Filter by type: bugfix, decision, architecture, code_change" })),
+          query: Type.String({ description: "Search query" }),
           limit: Type.Optional(Type.Number({ description: "Max results (default: 10)" })),
         }),
         async execute(_toolCallId, params) {
-          const { query, type, limit = 10 } = params as { query: string; type?: string; limit?: number };
+          const { query, limit = 10 } = params as { query: string; limit?: number };
 
-          const results = await client.search(query, { type, limit });
+          try {
+            const results = await client.search(query, limit);
 
-          if (results.length === 0) {
+            if (results.length === 0) {
+              return {
+                content: [{ type: "text", text: "No relevant memories found." }],
+                details: { count: 0 },
+              };
+            }
+
+            const text = results
+              .map((r, i) => `${i + 1}. [${r.type}] ${r.summary || r.output?.slice(0, 100)}...`)
+              .join("\n");
+
             return {
-              content: [{ type: "text", text: "No matching observations found." }],
-              details: { count: 0 },
+              content: [{ type: "text", text: `Found ${results.length} memories:\n\n${text}` }],
+              details: { count: results.length, observations: results.map(r => ({ id: r.id, type: r.type, summary: r.summary })) },
+            };
+          } catch (err) {
+            return {
+              content: [{ type: "text", text: `Memory search failed: ${err}` }],
+              details: { error: String(err) },
             };
           }
-
-          const text = results
-            .map((r) => {
-              const date = new Date(r.created_at).toLocaleDateString();
-              return `#${r.id} [${r.type}] ${date}\n  ${r.summary || r.tool_name || "No summary"}`;
-            })
-            .join("\n\n");
-
-          return {
-            content: [{ type: "text", text: `Found ${results.length} observations:\n\n${text}` }],
-            details: { count: results.length, results },
-          };
         },
       },
       { name: "memory_search" },
@@ -306,45 +245,72 @@ const openclawMemPlugin = {
 
     api.registerTool(
       {
-        name: "memory_get",
-        label: "Memory Get",
-        description: "Get full details of specific observations by ID. Use after memory_search to get complete context.",
+        name: "memory_store",
+        label: "Memory Store",
+        description: "Save important information in persistent memory.",
         parameters: Type.Object({
-          ids: Type.Array(Type.Number(), { description: "Observation IDs to fetch" }),
+          text: Type.String({ description: "Information to remember" }),
+          type: Type.Optional(Type.String({ description: "Type: bugfix, decision, architecture, preference, observation" })),
+          importance: Type.Optional(Type.Number({ description: "Importance 1-10 (default: 5)" })),
         }),
-        async execute(_toolCallId, params) {
-          const { ids } = params as { ids: number[] };
+        async execute(_toolCallId, params, ctx) {
+          const { text, type, importance = 5 } = params as { text: string; type?: string; importance?: number };
 
-          const observations = await client.getObservations(ids);
+          try {
+            const sessionKey = (ctx as { sessionKey?: string })?.sessionKey || "default";
+            const observation = await client.store({
+              session_key: sessionKey,
+              type: type || detectType(text),
+              summary: text,
+              output: text,
+              importance,
+            });
 
-          if (observations.length === 0) {
             return {
-              content: [{ type: "text", text: "No observations found for the given IDs." }],
-              details: { count: 0 },
+              content: [{ type: "text", text: `Stored memory #${observation.id}: "${text.slice(0, 80)}..."` }],
+              details: { action: "created", id: observation.id },
+            };
+          } catch (err) {
+            return {
+              content: [{ type: "text", text: `Failed to store memory: ${err}` }],
+              details: { error: String(err) },
             };
           }
+        },
+      },
+      { name: "memory_store" },
+    );
 
-          const text = observations
-            .map((o) => {
-              return `# Observation #${o.id} [${o.type}]
-Date: ${o.created_at}
-Tool: ${o.tool_name || "N/A"}
+    api.registerTool(
+      {
+        name: "memory_get",
+        label: "Memory Get",
+        description: "Get a specific memory by ID.",
+        parameters: Type.Object({
+          id: Type.Number({ description: "Memory ID" }),
+        }),
+        async execute(_toolCallId, params) {
+          const { id } = params as { id: number };
 
-## Input
-${truncate(o.input, 500) || "N/A"}
+          try {
+            const observation = await client.getObservation(id);
+            if (!observation) {
+              return {
+                content: [{ type: "text", text: `Memory #${id} not found.` }],
+                details: { error: "not_found" },
+              };
+            }
 
-## Output
-${truncate(o.output, 1000) || "N/A"}
-
-## Summary
-${o.summary || "N/A"}`;
-            })
-            .join("\n\n---\n\n");
-
-          return {
-            content: [{ type: "text", text }],
-            details: { count: observations.length, observations },
-          };
+            return {
+              content: [{ type: "text", text: `Memory #${id} [${observation.type}]:\n${observation.output || observation.summary}` }],
+              details: { observation },
+            };
+          } catch (err) {
+            return {
+              content: [{ type: "text", text: `Failed to get memory: ${err}` }],
+              details: { error: String(err) },
+            };
+          }
         },
       },
       { name: "memory_get" },
@@ -352,45 +318,45 @@ ${o.summary || "N/A"}`;
 
     api.registerTool(
       {
-        name: "memory_store",
-        label: "Memory Store",
-        description: "Manually store an important observation or decision. Use for significant decisions, architecture choices, or lessons learned.",
+        name: "memory_delete",
+        label: "Memory Delete",
+        description: "Delete a specific memory by ID. Use with caution.",
         parameters: Type.Object({
-          summary: Type.String({ description: "Summary of what to remember" }),
-          type: Type.Optional(Type.String({ description: "Type: decision, architecture, bugfix, note" })),
-          importance: Type.Optional(Type.Number({ description: "Importance 0-1 (default: 0.8)" })),
+          id: Type.Number({ description: "Memory ID to delete" }),
         }),
         async execute(_toolCallId, params) {
-          const { summary, type = "decision", importance = 0.8 } = params as { 
-            summary: string; 
-            type?: string; 
-            importance?: number;
-          };
+          const { id } = params as { id: number };
 
-          const result = await client.storeObservation({
-            sessionKey: currentSessionKey || "manual",
-            type,
-            toolName: "memory_store",
-            input: summary,
-            output: "Manually stored",
-            summary,
-            importance,
-          });
+          try {
+            const response = await fetch(`${workerUrl}/api/observations/${id}`, {
+              method: 'DELETE',
+              signal: AbortSignal.timeout(5000)
+            });
+            
+            if (response.status === 404) {
+              return {
+                content: [{ type: "text", text: `Memory #${id} not found.` }],
+                details: { error: "not_found" },
+              };
+            }
+            
+            if (!response.ok) {
+              throw new Error(`Delete failed: ${response.status}`);
+            }
 
-          if (!result) {
             return {
-              content: [{ type: "text", text: "Failed to store observation. Is the worker running?" }],
-              details: { success: false },
+              content: [{ type: "text", text: `Deleted memory #${id}` }],
+              details: { action: "deleted", id },
+            };
+          } catch (err) {
+            return {
+              content: [{ type: "text", text: `Failed to delete memory: ${err}` }],
+              details: { error: String(err) },
             };
           }
-
-          return {
-            content: [{ type: "text", text: `Stored as observation #${result.id}: "${truncate(summary, 100)}"` }],
-            details: { success: true, id: result.id },
-          };
         },
       },
-      { name: "memory_store" },
+      { name: "memory_delete" },
     );
 
     // ========================================================================
@@ -406,47 +372,32 @@ ${o.summary || "N/A"}`;
           .description("Check worker status")
           .action(async () => {
             const healthy = await client.health();
-            console.log(healthy ? "✓ Worker running" : "✗ Worker not running");
-            if (!healthy) {
-              console.log("Start with: openclaw-mem start-daemon");
+            if (healthy) {
+              const stats = await client.stats();
+              console.log(`✅ Worker running at ${workerUrl}`);
+              console.log(`   Sessions: ${stats.totalSessions}`);
+              console.log(`   Observations: ${stats.totalObservations}`);
+            } else {
+              console.log(`❌ Worker not responding at ${workerUrl}`);
             }
           });
 
         mem
           .command("search")
-          .description("Search observations")
+          .description("Search memories")
           .argument("<query>", "Search query")
-          .option("--type <type>", "Filter by type")
           .option("--limit <n>", "Max results", "10")
           .action(async (query, opts) => {
-            const results = await client.search(query, { 
-              type: opts.type, 
-              limit: parseInt(opts.limit) 
-            });
-            
-            if (results.length === 0) {
-              console.log("No results found");
-              return;
-            }
-
-            for (const r of results) {
-              const date = new Date(r.created_at).toLocaleDateString();
-              console.log(`#${r.id} [${r.type}] ${date}`);
-              console.log(`  ${r.summary || r.tool_name || "No summary"}\n`);
-            }
+            const results = await client.search(query, parseInt(opts.limit));
+            console.log(JSON.stringify(results, null, 2));
           });
 
         mem
-          .command("get")
-          .description("Get observation details")
-          .argument("<id>", "Observation ID")
-          .action(async (id) => {
-            const obs = await client.getObservation(parseInt(id));
-            if (!obs) {
-              console.log("Observation not found");
-              return;
-            }
-            console.log(JSON.stringify(obs, null, 2));
+          .command("stats")
+          .description("Show memory statistics")
+          .action(async () => {
+            const stats = await client.stats();
+            console.log(JSON.stringify(stats, null, 2));
           });
       },
       { commands: ["mem"] },
@@ -456,105 +407,108 @@ ${o.summary || "N/A"}`;
     // Lifecycle Hooks
     // ========================================================================
 
-    // Auto-recall: inject context before agent starts
-    if (cfg.autoRecall !== false) {
+    // Auto-recall: inject relevant memories before agent starts
+    if (autoRecall) {
       api.on("before_agent_start", async (event) => {
-        // Check worker availability
-        workerAvailable = await client.health();
-        if (!workerAvailable) {
-          api.logger.debug?.("openclaw-mem: worker not available, skipping recall");
+        api.logger.info(`openclaw-mem: before_agent_start fired, prompt length: ${event.prompt?.length || 0}`);
+        api.logger.info(`openclaw-mem: prompt preview: "${event.prompt?.slice(0, 100)}..."`);
+        
+        if (!event.prompt || event.prompt.length < 10) {
+          api.logger.info("openclaw-mem: prompt too short, skipping recall");
           return;
         }
 
-        // Create/update session
-        currentSessionKey = event.sessionKey || `session-${Date.now()}`;
-        await client.createSession(currentSessionKey, event.workspaceDir);
-
-        // Skip if no prompt
-        if (!event.prompt || event.prompt.length < 10) return;
-
         try {
-          const context = await client.getContext({ 
-            maxTokens: cfg.maxContextTokens || 4000,
-            projectPath: event.workspaceDir,
-          });
-
-          if (!context || !context.contextText || context.observations.length === 0) {
+          const healthy = await client.health();
+          api.logger.info(`openclaw-mem: worker healthy: ${healthy}`);
+          if (!healthy) {
+            api.logger.warn("openclaw-mem: worker not available for recall");
             return;
           }
 
-          api.logger.info?.(`openclaw-mem: injecting ${context.observations.length} observations (${context.totalTokens} tokens)`);
+          // Sanitize prompt: remove message_id metadata and special FTS5 characters
+          let searchQuery = event.prompt
+            .replace(/\[message_id:[^\]]+\]/g, '')  // Remove [message_id: ...]
+            .replace(/[:\[\](){}*"]/g, ' ')          // Remove FTS5 special chars
+            .trim();
+          
+          api.logger.info(`openclaw-mem: sanitized query: "${searchQuery.slice(0, 50)}..."`);
+          
+          const results = await client.search(searchQuery, 5);
+          api.logger.info(`openclaw-mem: search returned ${results.length} results`);
+          if (results.length === 0) return;
+
+          const memoryContext = results
+            .map(r => `- [${r.type}] ${r.summary || r.output?.slice(0, 200)}`)
+            .join("\n");
+
+          api.logger.info(`openclaw-mem: injecting ${results.length} memories into context`);
 
           return {
-            prependContext: `<memory-context>
-## Recent Memory (${context.totalTokens} tokens)
-The following observations are from previous sessions:
-
-${context.contextText}
-
-Use memory_search for more context. Reference observations by #ID.
-</memory-context>`,
+            prependContext: `<relevant-memories>\nThe following memories may be relevant:\n${memoryContext}\n</relevant-memories>`,
           };
         } catch (err) {
-          api.logger.warn?.(`openclaw-mem: recall failed: ${String(err)}`);
+          api.logger.warn(`openclaw-mem: recall failed: ${String(err)}`);
         }
       });
     }
 
-    // Auto-capture: store observations after agent runs
-    if (cfg.autoCapture !== false) {
+    // Auto-capture: analyze and store important information after agent ends
+    if (autoCapture) {
       api.on("agent_end", async (event) => {
-        if (!workerAvailable || !currentSessionKey) return;
-        if (!event.success) return;
+        if (!event.success || !event.messages || event.messages.length === 0) {
+          return;
+        }
 
         try {
-          // Extract tool results from messages
-          const toolResults: Array<{ toolName: string; input: string; output: string }> = [];
-          
-          for (const msg of event.messages || []) {
+          const healthy = await client.health();
+          if (!healthy) {
+            api.logger.warn("openclaw-mem: worker not available for capture");
+            return;
+          }
+
+          const texts: string[] = [];
+          for (const msg of event.messages) {
             if (!msg || typeof msg !== "object") continue;
             const msgObj = msg as Record<string, unknown>;
-            
-            // Look for tool_result messages
-            if (msgObj.role === "user" && Array.isArray(msgObj.content)) {
-              for (const block of msgObj.content) {
-                if (block && typeof block === "object" && 
-                    (block as Record<string, unknown>).type === "tool_result") {
-                  const toolBlock = block as Record<string, unknown>;
-                  toolResults.push({
-                    toolName: String(toolBlock.tool_use_id || "unknown"),
-                    input: "", // Input is in previous assistant message
-                    output: String(toolBlock.content || ""),
-                  });
+            const role = msgObj.role;
+            if (role !== "user" && role !== "assistant") continue;
+            const content = msgObj.content;
+            if (typeof content === "string") {
+              texts.push(content);
+            } else if (Array.isArray(content)) {
+              for (const block of content) {
+                if (block && typeof block === "object" && "type" in block &&
+                    (block as Record<string, unknown>).type === "text" &&
+                    "text" in block) {
+                  texts.push((block as Record<string, unknown>).text as string);
                 }
               }
             }
           }
 
-          // Store important observations
-          let stored = 0;
-          for (const result of toolResults.slice(0, 10)) {
-            const classification = classifyToolResult(result.toolName, result.input, result.output);
-            
-            // Skip low-importance observations
-            if (classification.importance < 0.5) continue;
+          const toCapture = texts.filter(text => text && shouldCapture(text));
+          if (toCapture.length === 0) return;
 
-            await client.storeObservation({
-              sessionKey: currentSessionKey,
-              type: classification.type,
-              toolName: result.toolName,
-              input: truncate(result.input, 2000),
-              output: truncate(result.output, 5000),
-              importance: classification.importance,
+          let stored = 0;
+          const sessionKey = (event as Record<string, unknown>).sessionKey as string || "default";
+
+          for (const text of toCapture.slice(0, 3)) {
+            await client.store({
+              session_key: sessionKey,
+              type: detectType(text),
+              summary: text.slice(0, 500),
+              output: text,
+              importance: 5,
             });
             stored++;
           }
 
           if (stored > 0) {
-            api.logger.info?.(`openclaw-mem: captured ${stored} observations`);
+            api.logger.info(`openclaw-mem: auto-captured ${stored} memories`);
           }
         } catch (err) {
-          api.logger.warn?.(`openclaw-mem: capture failed: ${String(err)}`);
+          api.logger.warn(`openclaw-mem: capture failed: ${String(err)}`);
         }
       });
     }
@@ -566,19 +520,15 @@ Use memory_search for more context. Reference observations by #ID.
     api.registerService({
       id: "openclaw-mem",
       start: async () => {
-        workerAvailable = await client.health();
-        api.logger.info?.(
-          `openclaw-mem: initialized (worker: ${workerAvailable ? "available" : "unavailable"})`,
-        );
-        if (!workerAvailable) {
-          api.logger.warn?.("openclaw-mem: start worker with: openclaw-mem start-daemon");
+        const healthy = await client.health();
+        if (healthy) {
+          api.logger.info(`openclaw-mem: connected to worker at ${workerUrl}`);
+        } else {
+          api.logger.warn(`openclaw-mem: worker not available at ${workerUrl} - run 'openclaw-mem start'`);
         }
       },
       stop: () => {
-        if (currentSessionKey) {
-          void client.endSession(currentSessionKey);
-        }
-        api.logger.info?.("openclaw-mem: stopped");
+        api.logger.info("openclaw-mem: stopped");
       },
     });
   },
