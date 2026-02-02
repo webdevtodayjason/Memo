@@ -5,7 +5,7 @@
 <h1 align="center">OpenClaw Persistent Memory</h1>
 
 <p align="center">
-  <i>Meet <a href="MEMO.md"><b>Memo</b></a> — the friendly crab-bot who never forgets.</i>
+  <i>Meet <a href="https://github.com/webdevtodayjason/Memo"><b>Memo</b></a> — the friendly crab-bot who never forgets.</i>
 </p>
 
 <p align="center">
