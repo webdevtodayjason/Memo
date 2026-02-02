@@ -1,4 +1,19 @@
-# OpenClaw-Mem
+<p align="center">
+  <img src="assets/Memo-Logo.png" alt="Memo - The Memory Keeper" width="300">
+</p>
+
+<h1 align="center">OpenClaw Persistent Memory</h1>
+
+<p align="center">
+  <i>Meet <a href="MEMO.md"><b>Memo</b></a> — the friendly crab-bot who never forgets.</i>
+</p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/openclaw-persistent-memory"><img src="https://img.shields.io/npm/v/openclaw-persistent-memory.svg" alt="npm"></a>
+  <a href="https://github.com/webdevtodayjason/openclaw-persistent-memory/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue.svg" alt="License"></a>
+</p>
+
+---
 
 **Persistent memory system for OpenClaw** - automatically captures context across sessions, enabling semantic search and progressive disclosure of past work.
 
