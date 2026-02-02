@@ -86,36 +86,67 @@ OpenClaw agents wake up fresh each session. Currently, continuity relies on:
 
 ## Installation
 
-### From npm (coming soon)
+### Step 1: Install the Worker Service
 
 ```bash
-npm install -g openclaw-mem
-openclaw-mem install
-```
+# Clone the repo
+git clone https://github.com/webdevtodayjason/openclaw_memory
+cd openclaw_memory
 
-### From source
-
-```bash
-git clone https://github.com/openclaw/openclaw-mem
-cd openclaw-mem
+# Install dependencies
 npm install
+
+# Build
 npm run build
+
+# Link globally (optional)
 npm link
 ```
 
-### Configure OpenClaw
+### Step 2: Start the Worker
+
+```bash
+# Start in foreground (for testing)
+npm run dev
+
+# Or start as daemon
+openclaw-mem start-daemon
+
+# Verify it's running
+curl http://127.0.0.1:37778/api/health
+```
+
+### Step 3: Install the OpenClaw Extension
+
+```bash
+# Copy extension to OpenClaw extensions directory
+cp -r extension ~/.openclaw/extensions/openclaw-mem
+
+# Or symlink for development
+ln -s $(pwd)/extension ~/.openclaw/extensions/openclaw-mem
+```
+
+### Step 4: Configure OpenClaw
 
 Add to your OpenClaw config (`~/.openclaw/config.yaml`):
 
 ```yaml
-plugins:
+extensions:
   openclaw-mem:
     enabled: true
-    port: 37778
-    dataDir: ~/.openclaw-mem
-    contextInjection:
-      enabled: true
-      maxTokens: 4000
+    workerUrl: "http://127.0.0.1:37778"
+    autoCapture: true      # Auto-capture tool results
+    autoRecall: true       # Auto-inject past context
+    maxContextTokens: 4000 # Token budget for context injection
+```
+
+### Step 5: Verify Installation
+
+```bash
+# Check worker status
+openclaw mem status
+
+# Should show: ✓ Worker running
 ```
 
 ---
@@ -313,7 +344,7 @@ npm run package         # Create distributable
 - [ ] Multi-project support
 
 ### v1.0.0
-- [ ] Full OpenClaw plugin integration
+- [x] Full OpenClaw plugin integration ✅
 - [ ] Publish to npm
 - [ ] Publish to ClawHub (https://clawhub.ai)
 - [ ] Documentation site
