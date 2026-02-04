@@ -5,7 +5,20 @@ All notable changes to OpenClaw-Mem will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.2] - 2026-02-04
+
+### Fixed
+- Auto-capture no longer stores system/operational messages (heartbeat prompts, cron payloads, silver price checks) as observations
+- `detectType()` no longer classifies operational text containing "need" as "preference" — now requires explicit preference language ("I like", "I want", "I prefer")
+- `[message_id: ...]` metadata tags are now stripped from stored observations
+- Added in-memory dedup to prevent the same content from being captured repeatedly across heartbeat cycles
+- `CAPTURE_TRIGGERS` patterns tightened with word boundaries to reduce false positives
+
+### Added
+- `SYSTEM_MESSAGE_PATTERNS` filter to reject known system prompts before trigger matching
+- `markCaptured()` / `textHash()` dedup system (tracks last 200 captures in memory)
+
+## [0.1.1] - 2026-02-02
 
 ### Added
 - Initial project structure

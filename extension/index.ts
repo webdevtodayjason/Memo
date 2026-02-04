@@ -151,8 +151,8 @@ class MemoryWorkerClient {
 // ============================================================================
 
 const CAPTURE_TRIGGERS = [
-  /remember|zapamatuj/i,
-  /prefer|radši|like|love|hate|want|need/i,
+  /remember\b|zapamatuj/i,
+  /\bprefer\b|radši|\bi like\b|\bi love\b|\bi hate\b|\bi want\b/i,
   /decided|rozhodli|will use|budeme/i,
   /important|always|never/i,
   /bug|fix|error|issue/i,
@@ -160,11 +160,51 @@ const CAPTURE_TRIGGERS = [
   /TODO|FIXME|NOTE/i,
 ];
 
+// Patterns that indicate system/operational messages, not real user content
+const SYSTEM_MESSAGE_PATTERNS = [
+  /^Read HEARTBEAT\.md/i,
+  /^System:\s*\[/,
+  /heartbeat.*workspace context/i,
+  /follow it strictly.*do not infer/i,
+  /\[message_id:\s*[0-9a-f-]+\]\s*$/,
+  /^HEARTBEAT_OK$/i,
+  /silver price check/i,
+  /price alert/i,
+];
+
+// Recent capture dedup: track hashes of recently stored observations
+const recentCaptures = new Set<string>();
+const DEDUP_MAX_SIZE = 200;
+
+function textHash(text: string): string {
+  // Simple hash: first 100 chars normalized
+  return text.slice(0, 100).toLowerCase().replace(/\s+/g, " ").trim();
+}
+
 function shouldCapture(text: string): boolean {
   if (!text || text.length < 20 || text.length > 2000) return false;
   if (text.includes("<relevant-memories>")) return false;
   if (text.startsWith("<") && text.includes("</")) return false;
-  return CAPTURE_TRIGGERS.some(r => r.test(text));
+  // Reject system/operational messages
+  if (SYSTEM_MESSAGE_PATTERNS.some(r => r.test(text))) return false;
+  // Strip message_id tags before trigger matching
+  const cleaned = text.replace(/\[message_id:\s*[0-9a-f-]+\]/g, "").trim();
+  if (cleaned.length < 20) return false;
+  // Dedup: skip if we recently captured the same content
+  const hash = textHash(cleaned);
+  if (recentCaptures.has(hash)) return false;
+  return CAPTURE_TRIGGERS.some(r => r.test(cleaned));
+}
+
+function markCaptured(text: string): void {
+  const cleaned = text.replace(/\[message_id:\s*[0-9a-f-]+\]/g, "").trim();
+  const hash = textHash(cleaned);
+  recentCaptures.add(hash);
+  // Evict oldest entries if set grows too large
+  if (recentCaptures.size > DEDUP_MAX_SIZE) {
+    const first = recentCaptures.values().next().value;
+    if (first) recentCaptures.delete(first);
+  }
 }
 
 function detectType(text: string): string {
@@ -172,7 +212,7 @@ function detectType(text: string): string {
   if (/bug|fix|error|issue|crash/.test(lower)) return "bugfix";
   if (/decided|decision|will use|chose/.test(lower)) return "decision";
   if (/architecture|design|pattern|structure/.test(lower)) return "architecture";
-  if (/prefer|like|want|need/.test(lower)) return "preference";
+  if (/\bprefer\b|\bi like\b|\bi want\b|\bi love\b|\bi hate\b/.test(lower)) return "preference";
   if (/function|class|method|api/.test(lower)) return "code_change";
   return "observation";
 }
@@ -494,13 +534,16 @@ const openclawMemPlugin = {
           const sessionKey = (event as Record<string, unknown>).sessionKey as string || "default";
 
           for (const text of toCapture.slice(0, 3)) {
+            // Clean message_id tags before storing
+            const cleanText = text.replace(/\[message_id:\s*[0-9a-f-]+\]/g, "").trim();
             await client.store({
               session_key: sessionKey,
-              type: detectType(text),
-              summary: text.slice(0, 500),
-              output: text,
+              type: detectType(cleanText),
+              summary: cleanText.slice(0, 500),
+              output: cleanText,
               importance: 5,
             });
+            markCaptured(text);
             stored++;
           }
 
